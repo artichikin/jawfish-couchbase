@@ -18,8 +18,8 @@ A simple class for using distributed locks on top of Couchbase. Usage is simple:
        lock.unlock();
     }
     
-    // you can also do non-blocking attempts to aquire the lock
-    if (lock.aquireLock(60)) {
+    // you can also do non-blocking attempts to acquire the lock
+    if (lock.acquireLock(60)) {
        try {
           // do your dirty business
        } finally {
