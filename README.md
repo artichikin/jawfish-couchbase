@@ -10,7 +10,7 @@ A simple class for using distributed locks on top of Couchbase. Usage is simple:
 ```java
     CouchLock lock = new CouchLock(couchbaseClient, "MyNamedLock");  
     
-    // Bocks until the lock is aquired. The lock will be auto-unlocked after 60 seconds
+    // Blocks until the lock is acquired. The lock will be auto-unlocked after 60 seconds
     lock.lock(60); 
     try {
        // do your dirty business
