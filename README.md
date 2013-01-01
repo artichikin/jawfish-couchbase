@@ -54,7 +54,7 @@ This implementation that should have the following guarantees:
    but the general case is that the oldest items will be consumed before the newest    
 3. Consumers won't consume the same item twice (Under normal operating conditions! We still have some work to handle edge cases around 
    couchbase node failures that could lead to the same item being returned by next() more than once). For now you will need to handle idempotency,
-   but our goal is to eventually handle that internally.
+   but our goal is to eventually handle that internally).
 
 #### How It Works
 A distributed work queue is a very difficult thing to implement on a vanilla NoSQL distributed key-value store. Couchbase 2.0 has two features that
