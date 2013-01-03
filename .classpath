@@ -28,9 +28,5 @@
 			<attribute name="maven.pomderived" value="true"/>
 		</attributes>
 	</classpathentry>
-	<classpathentry kind="lib" path="lib/couchbase-client-1.1.0.jar"/>
-	<classpathentry kind="lib" path="lib/jettison-1.1.jar"/>
-	<classpathentry kind="lib" path="lib/netty-3.5.5.Final.jar"/>
-	<classpathentry kind="lib" path="lib/spymemcached-2.8.9.jar"/>
 	<classpathentry kind="output" path="target/classes"/>
 </classpath>
