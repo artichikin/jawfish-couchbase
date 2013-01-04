@@ -89,8 +89,11 @@ public class CouchQueue {
          logger.error("View {} Not loaded: {} ", name, e.getMessage());
       }
       if (itemsView == null) {
-         DesignDocument<?> designDocument = couch.getDesignDocument(DESIGN);
-         if (designDocument == null) {
+         DesignDocument<?> designDocument = null;
+         try {
+            designDocument = couch.getDesignDocument(DESIGN);
+         } catch (InvalidViewException e) {
+            logger.error("Adding design document: {} ", DESIGN);
             designDocument = new DesignDocument<Object>(DESIGN);
          }
          ViewDesign viewDesign = new ViewDesign(name, getViewCode());
@@ -152,7 +155,6 @@ public class CouchQueue {
     * Appends an item to the queue with specified durability options.
     */
    public boolean append(String item, PersistTo persistTo, ReplicateTo replicateTo) {
-
       // issue a unique id for the item
       long id = couch.incr(id_key, 1, 1);
 
