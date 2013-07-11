@@ -1,6 +1,20 @@
-package com.jawfish.data.couchbase;
+/*
+ * Copyright ©2012 Jawfish Games Inc
+ * 
+ * Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
+ * in compliance with the License. You may obtain a copy of the License at
+ * 
+ * http://www.apache.org/licenses/LICENSE-2.0
+ * 
+ * Unless required by applicable law or agreed to in writing, software distributed under the License
+ * is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
+ * or implied. See the License for the specific language governing permissions and limitations under
+ * the License.
+ */
 
-import net.spy.memcached.OperationTimeoutException;
+package com.jawfishgames.data.couchbase;
+
+import net.spy.memcached.*;
 import net.spy.memcached.internal.OperationFuture;
 
 import org.slf4j.Logger;
@@ -8,15 +22,17 @@ import org.slf4j.LoggerFactory;
 
 import com.couchbase.client.CouchbaseClient;
 import com.couchbase.client.protocol.views.*;
-import com.jawfish.util.Time;
-import com.jawfish.util.Util;
 
 /**
- * A durable, concurrent, distributed queue built on top of couchbase.
+ * A durable, concurrent, distributed queue built on top of Couchbase 2.0.
  * 
- * This queue supports atomic append() and next() operations. If there are multiple producers or
- * consumers, next() will return items only roughly in the order they were queued. If there is a
- * single producer and single consumer, they should always be returned in their queued order.
+ * This queue supports append() and next() operations. If there is a single producer and single
+ * consumer, next() should always return items in their queued order. If there are multiple
+ * producer/consumers, next() will return items only roughly in the order they were queued.
+ * 
+ * TODO: Add support for full idempotency and timeouts on the items being processed.
+ * 
+ * TODO: Add more paranoid error handling to all couch calls
  */
 public class CouchQueue {
    public static final Logger logger      = LoggerFactory.getLogger(CouchQueue.class);
@@ -41,12 +57,12 @@ public class CouchQueue {
    private boolean            orphanCheck = true;
    private long               lastOrphanCheck;
 
-   public CouchQueue(CouchbaseClient couch, String name) {
-      this.name = name;
+   public CouchQueue(CouchbaseClient couch, String queueName) {
+      this.name = queueName;
       this.couch = couch;
-      this.id_key = name + "::counter";
-      this.head_key = name + "::head";
-      this.tail_key = name + "::tail";
+      this.id_key = queueName + "::counter";
+      this.head_key = queueName + "::head";
+      this.tail_key = queueName + "::tail";
 
       // init queue if it doesn't exist
       couch.add(head_key, 0, "0");
@@ -55,6 +71,9 @@ public class CouchQueue {
       installView();
    }
 
+   /**
+    * Javascript map function for a view that returns all items still in the queue
+    */
    private String getViewCode() {
       return String.format("function (doc, meta) {  if (meta.id.indexOf(\"%s::item-\") == 0) { emit(meta.id, null); }}", name);
    }
@@ -84,7 +103,7 @@ public class CouchQueue {
          } catch (Exception e) {
             logger.error(e.getMessage(), e);
          }
-         Util.sleep(500); // give time for subsequent view initializers
+         CouchUtils.sleep(500); // give time for subsequent view initializers
          try {
             itemsView = couch.getView(DESIGN, name);
             logger.info("Installed view {}", name);
@@ -95,6 +114,10 @@ public class CouchQueue {
       if (itemsView == null) {
          logger.error("Required design '{}' view '{}' not found. The queue may not function properly if not installed", DESIGN, name);
       }
+   }
+
+   public boolean viewInstalled() {
+      return itemsView != null;
    }
 
    /**
@@ -136,13 +159,9 @@ public class CouchQueue {
    }
 
    /**
-    * Appends an item to the queue.
-    * 
-    * TODO: Option for durability level (observed disk, replica, etc...)
-    * 
-    * TODO: Retries and error handling
+    * Appends an item to the queue with specified durability options.
     */
-   public boolean append(String item) {
+   public boolean append(String item, PersistTo persistTo, ReplicateTo replicateTo) {
       // issue a unique id for the item
       long id = issueItemId();
       if (id < 0) {
@@ -152,7 +171,7 @@ public class CouchQueue {
       // store the item
       final String key = keyForItem(id);
 
-      OperationFuture<Boolean> res = couch.add(key, 0, item);
+      OperationFuture<Boolean> res = couch.add(key, 0, item, persistTo, replicateTo);
       if (!res.getStatus().isSuccess()) {
          logger.error("Add {} failed: {}", key, res.getStatus());
          return false;
@@ -160,7 +179,7 @@ public class CouchQueue {
 
       // increment tail which will allow it to be consumed
       tailCache = couch.incr(tail_key, 1);
-
+      
       // if tail is < id, something is probably out of sync with the counter
       // so increment it up to the id value we just wrote
       while (tailCache < id) {
@@ -168,10 +187,13 @@ public class CouchQueue {
       }
 
       logger.debug("Queued {} ", key);
-
+      
       return true;
    }
 
+   /**
+    * Generates the unique document key for a queued item
+    */
    private String keyForItem(long id) {
       return String.format("%s::item-%d", name, id);
    }
@@ -181,7 +203,7 @@ public class CouchQueue {
     */
    public String next() {
       synchronized (this) {
-         if (orphanCheck || System.currentTimeMillis() > lastOrphanCheck + Time.ONE_SECOND * 5) {
+         if (orphanCheck || System.currentTimeMillis() > lastOrphanCheck + CouchUtils.ONE_SECOND * 5) {
             String item = checkForOrphans();
             if (item != null) {
                synchronized (this) {
@@ -201,35 +223,6 @@ public class CouchQueue {
          return claimItem(mine, false);
       }
       return null;
-   }
-
-   public long getTail() {
-      Object obj = couch.get(tail_key);
-      if (obj != null) {
-         return Long.parseLong(obj.toString());
-      }
-      return 0;
-   }
-
-   public long getHead() {
-      Object obj = couch.get(head_key);
-      if (obj != null) {
-         return Long.parseLong(obj.toString());
-      }
-      return 0;
-   }
-
-   /**
-    * A rough estimate of the size of the queue (does not include orphans)
-    */
-   public long size() {
-      tailCache = getTail();
-      long head = getHead();
-      if (head < tailCache) {
-         return tailCache - head;
-      } else {
-         return 0;
-      }
    }
 
    /**
@@ -303,10 +296,44 @@ public class CouchQueue {
          if (attempts > 5) {
             logger.debug("Backing off {} tries so far: {}", key, attempts);
          }
-         Util.sleep(Math.min(1000, (int) Math.pow(2, attempts)));
+         CouchUtils.sleep(Math.min(1000, (int) Math.pow(2, attempts)));
       }
       logger.debug("Giving up after: " + attempts + " attempts");
       return null;
    }
 
+   /**
+    * Get the current tail id
+    */
+   protected long getTail() {
+      Object obj = couch.get(tail_key);
+      if (obj != null) {
+         return Long.parseLong(obj.toString());
+      }
+      return 0;
+   }
+
+   /**
+    * Get the current head id
+    */
+   protected long getHead() {
+      Object obj = couch.get(head_key);
+      if (obj != null) {
+         return Long.parseLong(obj.toString());
+      }
+      return 0;
+   }
+
+   /**
+    * A rough estimate of the size of the queue (does not include orphans)
+    */
+   public long size() {
+      tailCache = getTail();
+      long head = getHead();
+      if (head < tailCache) {
+         return tailCache - head;
+      } else {
+         return 0;
+      }
+   }
 }
